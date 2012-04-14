@@ -10,7 +10,6 @@
 
 #import "CHDropboxSync.h"
 #import "ConciseKit.h"
-#import "DropboxSDK.h"
 #import "Reachability.h"
 #import "SyncTask.h"
 
@@ -37,6 +36,7 @@
 - (void)doTodoItem;
 - (void)doSyncPostConfirmation;
 - (void)savePostSyncStatus;
+- (void)cancelLastTask;
 @end
 
 @implementation CHDropboxSync
@@ -56,8 +56,24 @@
 @synthesize delegate;
 @synthesize lastTask;
 @synthesize lastAlertMessage;
+@synthesize showAlerts;
+@synthesize rootDirectory;
 
-- (void)dealloc {
+- (id) init
+{
+    self = [super init];
+    
+    if( self )
+    {
+        self.showAlerts = YES;
+        self.rootDirectory = $.documentPath;
+    }
+    
+    return self;
+}
+
+- (void)dealloc 
+{
     self.client = nil;
     self.remoteFoldersPendingMetadata = nil;
     self.remoteFiles = nil;
@@ -73,69 +89,120 @@
     self.alert = nil;
     self.lastTask = nil;
     self.lastAlertMessage = nil;
+    self.rootDirectory = nil;
+    
     [super dealloc];
-}
-
-#pragma mark - Maintenance
-
-// Call this when they unlink or link their dropbox account, to forget the last sync status
-+ (void)forgetStatus {
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:defaultsFiles];
-    [[NSUserDefaults standardUserDefaults] removeObjectForKey:defaultsFolders];
 }
 
 #pragma mark - Alert/progress view
 
 // Make the 'please wait' alert view
-- (void)makeAlert {
-    self.alert = [[[UIAlertView alloc] initWithTitle:@"Syncing with Dropbox" message:@"Please wait...\n\n" delegate:nil cancelButtonTitle:nil otherButtonTitles:nil] autorelease];
-    [alert show]; // Have to show the alert before we add subviews, because otherwise the alert.bounds is zero
-    
-    UIActivityIndicatorView* act = [[[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge] autorelease];
-    act.frame = CGRectOffset(act.frame, alert.bounds.size.width/2 - act.frame.size.width/2,
-                             alert.bounds.size.height/2 - act.frame.size.height/2 + 26);
-    [act startAnimating];
-    [alert addSubview:act];
-}
-
-- (void)alertMessage:(NSString*)msg {
-    alert.message = $str(@"%@\n\n", msg);
-    self.lastAlertMessage = msg;
-}
-
-- (void)alertMessageAppendPercentage:(float)percent {
-    if (percent<1) { // Don't report the 100% because that looks silly
-        alert.message = $str(@"%@\n(This task: %.0f%%)\n", lastAlertMessage, percent*100.0);
+- (void)makeAlert 
+{
+    if( showAlerts )
+    {
+        self.alert = [[[UIAlertView alloc] initWithTitle:@"Syncing with Dropbox" message:@"Please wait...\n\n" delegate:nil cancelButtonTitle:nil otherButtonTitles:nil] autorelease];
+        [alert show]; // Have to show the alert before we add subviews, because otherwise the alert.bounds is zero
+        
+        UIActivityIndicatorView* act = [[[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleWhiteLarge] autorelease];
+        act.frame = CGRectOffset(act.frame, alert.bounds.size.width/2 - act.frame.size.width/2,
+                                 alert.bounds.size.height/2 - act.frame.size.height/2 + 26);
+        [act startAnimating];
+        [alert addSubview:act];
     }
 }
 
-- (void)closeAlert {
-    [alert dismissWithClickedButtonIndex:0 animated:YES];
-    self.alert = nil;
+- (void)alertMessage:(NSString*)msg 
+{
+    if( showAlerts )
+    {
+        alert.message = $str(@"%@\n\n", msg);
+        
+        self.lastAlertMessage = msg;
+    }
+}
+
+- (void)alertMessageAppendPercentage:(float)percent 
+{
+    if( showAlerts )
+    {
+        if (percent<1) { // Don't report the 100% because that looks silly
+            alert.message = $str(@"%@\n(This task: %.0f%%)\n", lastAlertMessage, percent*100.0);
+        }
+    }
+}
+
+- (void)closeAlert 
+{
+    if( showAlerts )
+    {
+        [alert dismissWithClickedButtonIndex:0 animated:YES];
+        self.alert = nil;
+    }
 }
 
 // Shows the 'completed' message, and soon closes the alert
-- (void)alertCompleteWithMessage:(NSString*)message {
-    [self alertMessage:message];
-    
-    // Remove the spinner
-    for (UIView* sub in alert.subviews) {
-        if ([sub isKindOfClass:[UIActivityIndicatorView class]]) {
-            [sub removeFromSuperview];
+- (void)alertCompleteWithMessage:(NSString*)message 
+{
+    if( showAlerts )
+    {
+        [self alertMessage:message];
+        
+        // Remove the spinner
+        for (UIView* sub in alert.subviews) {
+            if ([sub isKindOfClass:[UIActivityIndicatorView class]]) {
+                [sub removeFromSuperview];
+            }
         }
+        
+        // Close in 1s
+        [self performSelector:@selector(closeAlert) withObject:nil afterDelay:1];
     }
-    
-    // Close in 1s
-    [self performSelector:@selector(closeAlert) withObject:nil afterDelay:1];
 }
 
 #pragma mark - Completion
 
 // Tell the delegate about completion
-- (void)tellDelegateComplete {
-    if ([delegate respondsToSelector:@selector(syncComplete)]) {
+- (void)tellDelegateCancelled
+{
+    if ([delegate respondsToSelector:@selector(syncCancelled:)]) 
+    {
+        [delegate syncCancelled:self];
+    }
+}
+
+// Tell the delegate about completion
+- (void)tellDelegateFailed
+{
+    if ([delegate respondsToSelector:@selector(syncFailed:)]) 
+    {
+        [delegate syncFailed:self];
+    }
+}
+
+// Tell the delegate about completion
+- (void)tellDelegateComplete
+{
+    if ([delegate respondsToSelector:@selector(syncComplete:)]) 
+    {
+        [delegate syncComplete:self];
+    }
+}
+
+- (void)tellDelegateCompleteAfterDelay 
+{
+    if ([delegate respondsToSelector:@selector(syncComplete:)]) 
+    {
         // Do it after a short delay so the caller (dbrestclient) gets a chance to finish what it's doing before we zombify it!
-        [delegate performSelector:@selector(syncComplete) withObject:nil afterDelay:0.001];
+        [self performSelector:@selector(tellDelegateComplete) withObject:nil afterDelay:0.001];
+    }
+}
+
+- (void)tellDelegateStarted
+{
+    if( [delegate respondsToSelector:@selector(syncStarted:)] )
+    {
+        [delegate syncStarted:self];
     }
 }
 
@@ -143,7 +210,7 @@
     [self savePostSyncStatus];
     [self alertCompleteWithMessage:message];
     
-    [self tellDelegateComplete];
+    [self tellDelegateCompleteAfterDelay];
 }
 - (void)success {
     [self successWithMessage:@"Complete"];
@@ -158,12 +225,18 @@
     
     if (message) {
         [[[[UIAlertView alloc] initWithTitle:@"Sync Error" message:message delegate:nil cancelButtonTitle:@"Ok" otherButtonTitles:nil] autorelease] show];
+        
+        [self tellDelegateFailed];
     }
-    
-    [self tellDelegateComplete];
+    else
+    {
+        [self tellDelegateCancelled];
+    }
 }
 
-- (void)cancel {
+- (void)cancel 
+{
+    [self cancelLastTask];
     [self failure:nil];
 }
 
@@ -175,7 +248,14 @@
     NSMutableDictionary* folders = [NSMutableDictionary dictionary];
     
     // NSFileManager's enumeratorAtURL crashes! Don't use it
-    NSString* root = $.documentPath;
+    NSString* root = self.rootDirectory;
+    
+    // Attempt to create path if it doesn't exist
+    if( ![[NSFileManager defaultManager] fileExistsAtPath:root] )
+    {
+        [[NSFileManager defaultManager] createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:NULL];                                        
+    }    
+    
     NSMutableSet* pathsToSearch = $mset(root);
     while (pathsToSearch.count) {
         // Pop a path to search
@@ -257,7 +337,7 @@
     
     // Note that this folder's data has arrived
     [remoteFoldersPendingMetadata removeObject:metadata.path];
-
+    
     // Is this the last one, no more recursing needed?
     if (!remoteFoldersPendingMetadata.count) {
         [self remoteMetadataComplete];
@@ -393,18 +473,44 @@
 #pragma mark - Main flow of control
 
 // Note that whomever calls this must retain this instance until it's finished
-- (void)doSync {
+- (void)doSync 
+{
     // Check dropbox is ready
     if (![[DBSession sharedSession] isLinked]) {
-        [self failure:@"Cannot sync, dropbox isn't linked"];
+        [self failure:@"Cannot sync, please link your Dropbox account."];
         return;
     }
+    
+    [self doSyncPostConfirmation];
+}
 
+- (void) doSyncWithAlert
+{
+    // Check dropbox is ready
+    if (![[DBSession sharedSession] isLinked]) {
+        [self failure:@"Cannot sync, please link your Dropbox account."];
+        return;
+    }
+    
     // First up, ask for confirmation
-    BOOL wifi = [[Reachability reachabilityForLocalWiFi] isReachableViaWiFi];
-    NSString* message = wifi ? @"Synchronize with Dropbox?" :
+    if( showAlerts )
+    {
+        BOOL wifi = [[Reachability reachabilityForLocalWiFi] isReachableViaWiFi];
+        NSString* message = wifi ? @"Synchronize with Dropbox?" :
         @"Are you sure you wish to synchronize with Dropbox? You're not on wifi - this may use a lot of your data usage.";
-    [[[[UIAlertView alloc] initWithTitle:nil message:message delegate:self cancelButtonTitle:@"Cancel" otherButtonTitles:@"Sync", nil] autorelease] show];
+        [[[[UIAlertView alloc] initWithTitle:nil message:message delegate:self cancelButtonTitle:@"Cancel" otherButtonTitles:@"Sync", nil] autorelease] show];
+    }
+    else
+    {
+        [self doSyncPostConfirmation];
+    }    
+}
+
+// Use this when linking a new account, prevents CHDropboxSync from deleting the user's files
++ (void)clearLastSyncData
+{
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:defaultsFiles];
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:defaultsFolders];
 }
 
 // Called when they confirm
@@ -417,9 +523,10 @@
 }
 
 // Actually get started on the sync
-- (void)doSyncPostConfirmation {    
+- (void)doSyncPostConfirmation 
+{    
     [self makeAlert];
-        
+    
     self.client = [[[DBRestClient alloc] initWithSession:[DBSession sharedSession]] autorelease];
     self.client.delegate = self;
     
@@ -432,7 +539,7 @@
     
     self.lastSyncFiles = [[NSUserDefaults standardUserDefaults] dictionaryForKey:defaultsFiles];
     self.lastSyncFolders = [[NSUserDefaults standardUserDefaults] dictionaryForKey:defaultsFolders];
-
+    
     // Get the current status of dropbox
     [self alertMessage:@"Comparing..."];
     [self startGettingRemoteMetadata];
@@ -440,8 +547,8 @@
 }
 
 // Called when the current status metadata is gotten from dropbox
-- (void)remoteMetadataComplete {
-    
+- (void)remoteMetadataComplete
+{    
     // Now we get down to figuring out what needs to be done
     // Strategy is: compare local vs dropbox, if there's a difference, use the last sync to hint what happened
     
@@ -462,8 +569,27 @@
 
 #pragma mark - Working through the todo list
 
+// Cancelling the last task
+- (void)cancelLastTask
+{    
+    if( client && self.lastTask )
+    {
+        if( self.lastTask.taskType == SyncTaskTypeFileDownload )
+        {
+            [client cancelFileLoad:self.lastTask.path];
+        }
+        else if( self.lastTask.taskType == SyncTaskTypeFileUpload )
+        {
+            [client cancelFileUpload:self.lastTask.path];
+        }
+    }
+    
+    self.lastTask = nil;
+}
+
 // Do the next item on the todo list
-- (void)doTodoItem {
+- (void)doTodoItem 
+{
     // All done?
     if (!todo.count) {
         [self success];
@@ -484,8 +610,14 @@
         [self alertMessage:$str(@"%d tasks remaining...", remaining)];
     } 
     
+    // Notify the delegate of progress
+    if( [delegate respondsToSelector:@selector(sync:remainingTasks:)] )
+    {
+        [delegate sync:self remainingTasks:remaining];
+    }
+    
     // Expand its path
-    NSString* localPath = [[$ documentPath] stringByAppendingPathComponent:task.path];
+    NSString* localPath = [self.rootDirectory stringByAppendingPathComponent:task.path];
     NSError* err = nil;
     
     // Do it!
@@ -545,8 +677,8 @@
 - (void)restClient:(DBRestClient *)client createFolderFailedWithError:(NSError *)error {
     [self failure:$str(@"Error creating dropbox folder: %@", error)];
 }
-     
-         
+
+
 - (void)restClient:(DBRestClient *)client deletedPath:(NSString *)path {
     [self performSelector:@selector(doTodoItem) withObject:nil afterDelay:0.001]; // Then do the next item on the todo list
 }
@@ -554,7 +686,7 @@
     [self failure:$str(@"Error deleting dropbox file/folder: %@", error)];
 }
 
-         
+
 - (void)restClient:(DBRestClient *)client uploadedFile:(NSString *)destPath from:(NSString *)srcPath metadata:(DBMetadata *)metadata {
     // Now the file has uploaded, we need to set its 'last modified' date locally to match the date on dropbox.
     // Unfortunately we can't change the dropbox date to match the local date, which would be more appropriate, really.
@@ -567,15 +699,24 @@
     } else {
         [self performSelector:@selector(doTodoItem) withObject:nil afterDelay:0.001]; // Then do the next item on the todo list
     }
+    
+    self.lastTask = nil;    
 }
 - (void)restClient:(DBRestClient *)client uploadFileFailedWithError:(NSError *)error {
     [self failure:$str(@"Error uploading to dropbox: %@", error)];
 }
-- (void)restClient:(DBRestClient *)client uploadProgress:(CGFloat)progress forFile:(NSString *)destPath from:(NSString *)srcPath {
+- (void)restClient:(DBRestClient *)client uploadProgress:(CGFloat)progress forFile:(NSString *)destPath from:(NSString *)srcPath 
+{
+    // Notify the delegate of progress
+    if( [delegate respondsToSelector:@selector(sync:file:progress:)] )
+    {
+        [delegate sync:self file:destPath progress:progress];
+    }        
+    
     [self alertMessageAppendPercentage:progress];
 }
 
-         
+
 - (void)restClient:(DBRestClient *)client loadedFile:(NSString *)destPath {
     // Now the file has downloaded, we need to set its 'last modified' date locally to match the date on dropbox
     NSDate* lastModified = [remoteFileDates $for:lastTask.path];
@@ -588,11 +729,20 @@
     } else {
         [self performSelector:@selector(doTodoItem) withObject:nil afterDelay:0.001]; // Then do the next item on the todo list
     }
+    
+    self.lastTask = nil;
 }
 - (void)restClient:(DBRestClient *)client loadFileFailedWithError:(NSError *)error {
     [self failure:$str(@"Error downloading from dropbox: %@", error)];
 }
-- (void)restClient:(DBRestClient *)client loadProgress:(CGFloat)progress forFile:(NSString *)destPath {
+- (void)restClient:(DBRestClient *)client loadProgress:(CGFloat)progress forFile:(NSString *)destPath 
+{
+    // Notify the delegate of progress
+    if( [delegate respondsToSelector:@selector(sync:file:progress:)] )
+    {
+        [delegate sync:self file:destPath progress:progress];
+    }    
+    
     [self alertMessageAppendPercentage:progress];
 }
 
