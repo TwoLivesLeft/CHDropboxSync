@@ -1,3 +1,46 @@
+Additions
+---
+
+This library has been modified to allow for additional notifications during the syncing progress.
+
+A CHDropboxSyncDelegate protocol has been added with the following methods:
+
+	- (void) syncStarted:(CHDropboxSync*)sync
+
+	//Called for each new task started by CHDropboxSync
+	- (void) sync:(CHDropboxSync*)sync remainingTasks:(NSInteger)remaining;
+
+	//Called with the progress for each file down/upload
+	- (void) sync:(CHDropboxSync*)sync file:(NSString*)path progress:(CGFloat)progress;
+
+	- (void) syncComplete:(CHDropboxSync*)sync;
+	- (void) syncCancelled:(CHDropboxSync*)sync;
+	- (void) syncFailed:(CHDropboxSync*)sync;
+
+The original CHDropboxSync class has been expanded with the following methods:
+
+	//Whether to show alerts during the syncing process (defaults to YES)
+	@property(assign) BOOL showAlerts;
+	
+	//A root directory to use (defaults to documents directory)
+	@property(retain,nonatomic) NSString *rootDirectory;
+
+	//The original doSync method now no longer 
+	// asks the user before beginning the sync
+	- (void)doSync;
+
+	//This method is the same as the original library's doSync method
+	- (void)doSyncWithAlert;
+
+	//Cancel the process mid-sync
+	// (this tells Dropbox to cancel any partially loaded files)
+	- (void)cancel;
+
+	//If you are unlinking and linking multiple accounts, you can call
+	// this method to remove information about the last sync, as it will be
+	// invalid when a new account is linked.
+	+ (void)clearLastSyncData;
+
 CHDropboxSync
 ===
 
@@ -12,6 +55,7 @@ It's been extracted from an app I've been writing to help keep track of your car
 Where to get it
 ---
 [github.com/chrishulbert/CHDropboxSync](https://github.com/chrishulbert/CHDropboxSync)
+
 
 How to use
 ---
