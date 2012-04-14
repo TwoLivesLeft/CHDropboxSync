@@ -1,7 +1,7 @@
 Additions
 ---
 
-This library has been modified to allow for additional notifications during the syncing progress.
+This library has been modified to allow for additional notifications during the syncing process.
 
 A CHDropboxSyncDelegate protocol has been added with the following methods:
 
